@@ -492,21 +492,48 @@ fn negotiate_capabilities(client_caps: &[CapabilitySet], server_caps: &[Capabili
 }
 
 /// Intersect flags for matching capability set versions
+/// Intersect flags for matching capability set versions.
+///
+/// Positive flags (e.g. SMALL_CACHE) are ANDed: both sides must support them.
+/// Negative flags (e.g. AVC_DISABLED) are ORed: if either side disables AVC, it stays disabled.
 fn intersect_flags(client: &CapabilitySet, server: &CapabilitySet) -> CapabilitySet {
     match (client, server) {
         (CapabilitySet::V8 { flags: cf }, CapabilitySet::V8 { flags: sf }) => CapabilitySet::V8 { flags: *cf & *sf },
         (CapabilitySet::V8_1 { flags: cf }, CapabilitySet::V8_1 { flags: sf }) => {
             CapabilitySet::V8_1 { flags: *cf & *sf }
         }
-        (CapabilitySet::V10 { flags: cf }, CapabilitySet::V10 { flags: sf }) => CapabilitySet::V10 { flags: *cf & *sf },
+        (CapabilitySet::V10 { flags: cf }, CapabilitySet::V10 { flags: sf }) => {
+            // AVC_DISABLED is a negative flag: OR to preserve client's restriction
+            let positive = *cf & *sf;
+            let negative = *cf | *sf;
+            CapabilitySet::V10 {
+                flags: (positive & !CapabilitiesV10Flags::AVC_DISABLED)
+                    | (negative & CapabilitiesV10Flags::AVC_DISABLED),
+            }
+        }
         (CapabilitySet::V10_2 { flags: cf }, CapabilitySet::V10_2 { flags: sf }) => {
-            CapabilitySet::V10_2 { flags: *cf & *sf }
+            let positive = *cf & *sf;
+            let negative = *cf | *sf;
+            CapabilitySet::V10_2 {
+                flags: (positive & !CapabilitiesV10Flags::AVC_DISABLED)
+                    | (negative & CapabilitiesV10Flags::AVC_DISABLED),
+            }
         }
         (CapabilitySet::V10_3 { flags: cf }, CapabilitySet::V10_3 { flags: sf }) => {
-            CapabilitySet::V10_3 { flags: *cf & *sf }
+            let positive = *cf & *sf;
+            let negative = *cf | *sf;
+            CapabilitySet::V10_3 {
+                flags: (positive & !CapabilitiesV103Flags::AVC_DISABLED)
+                    | (negative & CapabilitiesV103Flags::AVC_DISABLED),
+            }
         }
         (CapabilitySet::V10_4 { flags: cf }, CapabilitySet::V10_4 { flags: sf }) => {
-            CapabilitySet::V10_4 { flags: *cf & *sf }
+            let positive = *cf & *sf;
+            let negative = *cf | *sf;
+            CapabilitySet::V10_4 {
+                flags: (positive & !CapabilitiesV104Flags::AVC_DISABLED)
+                    | (negative & CapabilitiesV104Flags::AVC_DISABLED),
+            }
         }
         (CapabilitySet::V10_5 { flags: cf }, CapabilitySet::V10_5 { flags: sf }) => {
             CapabilitySet::V10_5 { flags: *cf & *sf }
@@ -518,7 +545,12 @@ fn intersect_flags(client: &CapabilitySet, server: &CapabilitySet) -> Capability
             CapabilitySet::V10_6Err { flags: *cf & *sf }
         }
         (CapabilitySet::V10_7 { flags: cf }, CapabilitySet::V10_7 { flags: sf }) => {
-            CapabilitySet::V10_7 { flags: *cf & *sf }
+            let positive = *cf & *sf;
+            let negative = *cf | *sf;
+            CapabilitySet::V10_7 {
+                flags: (positive & !CapabilitiesV107Flags::AVC_DISABLED)
+                    | (negative & CapabilitiesV107Flags::AVC_DISABLED),
+            }
         }
         // V10_1 has no flags; Unknown and mismatched variants return server as-is.
         _ => server.clone(),
