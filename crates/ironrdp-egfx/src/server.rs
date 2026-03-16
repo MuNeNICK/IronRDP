@@ -806,7 +806,13 @@ impl GraphicsPipelineServer {
             self.output_queue.push_back(GfxPdu::ResetGraphics(ResetGraphicsPdu {
                 width: u32::from(desktop_width),
                 height: u32::from(desktop_height),
-                monitors: Vec::new(),
+                monitors: vec![Monitor {
+                    left: 0,
+                    top: 0,
+                    right: i32::from(desktop_width) - 1,
+                    bottom: i32::from(desktop_height) - 1,
+                    flags: ironrdp_pdu::gcc::MonitorFlags::PRIMARY,
+                }],
             }));
 
             self.output_width = desktop_width;
