@@ -73,6 +73,11 @@ pub enum MouseEvent {
 pub trait RdpServerInputHandler: Send {
     fn keyboard(&mut self, event: KeyboardEvent);
     fn mouse(&mut self, event: MouseEvent);
+
+    /// Called when a new client connects with its keyboard layout info.
+    /// `layout` is the Windows LCID (e.g., 0x0409 = US, 0x0411 = Japanese).
+    /// `keyboard_type` is the keyboard type (e.g., IbmEnhanced = 4, Japanese106 = 7).
+    fn set_keyboard_layout(&mut self, _layout: u32, _keyboard_type: u32) {}
 }
 
 impl From<(u8, fast_path::KeyboardFlags)> for KeyboardEvent {

@@ -866,6 +866,10 @@ impl RdpServer {
                         );
                     }
                 }
+                CapabilitySet::Input(input) => {
+                    let kb_type = input.keyboard_type.map(|t| t as u32).unwrap_or(0);
+                    self.handler.lock().await.set_keyboard_layout(input.keyboard_layout, kb_type);
+                }
                 CapabilitySet::SurfaceCommands(c) => {
                     surface_flags = c.flags;
                 }
