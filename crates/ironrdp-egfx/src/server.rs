@@ -1105,6 +1105,34 @@ impl GraphicsPipelineServer {
         Some(frame_id)
     }
 
+    /// Queue an uncompressed frame for transmission (EGFX codec 0x0000).
+    pub fn send_uncompressed_frame(
+        &mut self,
+        surface_id: u16,
+        pixel_data: Vec<u8>,
+        dest_rect: InclusiveRectangle,
+        timestamp_ms: u32,
+    ) -> Option<u32> {
+        if !self.is_ready() || self.should_backpressure() {
+            return None;
+        }
+        self.surfaces.get(surface_id)?;
+        let timestamp = Self::make_timestamp(timestamp_ms);
+        let frame_id = self.frames.begin_frame(timestamp);
+
+        self.output_queue.push_back(GfxPdu::StartFrame(StartFramePdu { timestamp, frame_id }));
+        self.output_queue.push_back(GfxPdu::WireToSurface1(WireToSurface1Pdu {
+            surface_id,
+            codec_id: Codec1Type::Uncompressed,
+            pixel_format: PixelFormat::XRgb,
+            destination_rectangle: dest_rect,
+            bitmap_data: pixel_data,
+        }));
+        self.output_queue.push_back(GfxPdu::EndFrame(EndFramePdu { frame_id }));
+
+        Some(frame_id)
+    }
+
     /// Queue an H.264 AVC444 frame for transmission
     ///
     /// AVC444 uses two streams: luma (Y) and chroma (UV). Set `chroma_data` to
