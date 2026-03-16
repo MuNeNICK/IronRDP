@@ -477,10 +477,9 @@ fn capability_priority(cap: &CapabilitySet) -> u32 {
 
 /// Negotiate the best capability set between client and server
 fn negotiate_capabilities(client_caps: &[CapabilitySet], server_caps: &[CapabilitySet]) -> Option<CapabilitySet> {
-    let mut server_sorted: Vec<_> = server_caps.iter().collect();
-    server_sorted.sort_by_key(|cap| core::cmp::Reverse(capability_priority(cap)));
-
-    for server_cap in server_sorted {
+    // Respect the order of server_caps (preferred_capabilities) as priority.
+    // The handler controls negotiation preference by ordering its list.
+    for server_cap in server_caps {
         for client_cap in client_caps {
             if core::mem::discriminant(client_cap) == core::mem::discriminant(server_cap) {
                 return Some(intersect_flags(client_cap, server_cap));
