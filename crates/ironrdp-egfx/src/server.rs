@@ -1260,6 +1260,18 @@ impl GraphicsPipelineServer {
 
         self.state = ServerState::Ready;
         self.handler.on_ready(&negotiated);
+
+        // Auto-create surface if output dimensions are set.
+        // This ensures ResetGraphics + CreateSurface + MapSurfaceToOutput
+        // are in the same output_queue batch as CapabilitiesConfirm,
+        // which is required by some clients (e.g., iOS Microsoft Remote Desktop).
+        if self.output_width > 0 && self.output_height > 0 && self.surfaces.is_empty() {
+            let w = self.output_width;
+            let h = self.output_height;
+            if let Some(sid) = self.create_surface(w, h) {
+                self.map_surface_to_output(sid, 0, 0);
+            }
+        }
     }
 
     fn handle_frame_acknowledge(&mut self, pdu: FrameAcknowledgePdu) {
