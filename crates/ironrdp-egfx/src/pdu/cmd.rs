@@ -1680,7 +1680,7 @@ impl TryFrom<u32> for CapabilityVersion {
             0xa_0601 => CapabilityVersion::V10_6Err,
             0xa_0701 => CapabilityVersion::V10_7,
             0xa_0702 => CapabilityVersion::Unknown,
-            _ => return Err(invalid_field_err!("version", "invalid capability version")),
+            _ => CapabilityVersion::Unknown,
         };
 
         Ok(res)
