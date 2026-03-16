@@ -1059,6 +1059,47 @@ impl GraphicsPipelineServer {
         Some(frame_id)
     }
 
+    /// Queue a RemoteFX frame for transmission
+    ///
+    /// `rfx_data` must be a serialized RFX message sequence (TS_RFX_CONTEXT +
+    /// TS_RFX_FRAME_BEGIN + TS_RFX_REGION + TS_RFX_TILESET + TS_RFX_FRAME_END).
+    ///
+    /// Returns `Some(frame_id)` if queued, `None` if not ready or backpressured.
+    pub fn send_rfx_frame(
+        &mut self,
+        surface_id: u16,
+        rfx_data: Vec<u8>,
+        dest_rect: InclusiveRectangle,
+        timestamp_ms: u32,
+    ) -> Option<u32> {
+        if !self.is_ready() {
+            return None;
+        }
+        if self.should_backpressure() {
+            return None;
+        }
+
+        self.surfaces.get(surface_id)?;
+
+        let timestamp = Self::make_timestamp(timestamp_ms);
+        let frame_id = self.frames.begin_frame(timestamp);
+
+        self.output_queue
+            .push_back(GfxPdu::StartFrame(StartFramePdu { timestamp, frame_id }));
+
+        self.output_queue.push_back(GfxPdu::WireToSurface1(WireToSurface1Pdu {
+            surface_id,
+            codec_id: Codec1Type::RemoteFx,
+            pixel_format: PixelFormat::XRgb,
+            destination_rectangle: dest_rect,
+            bitmap_data: rfx_data,
+        }));
+
+        self.output_queue.push_back(GfxPdu::EndFrame(EndFramePdu { frame_id }));
+
+        Some(frame_id)
+    }
+
     /// Queue an H.264 AVC444 frame for transmission
     ///
     /// AVC444 uses two streams: luma (Y) and chroma (UV). Set `chroma_data` to
