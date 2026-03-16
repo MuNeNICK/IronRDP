@@ -486,6 +486,13 @@ impl RdpServer {
         Ok(())
     }
 
+    /// Reset static channel state after a connection ends.
+    /// Must be called between connections when using `run_connection()` directly
+    /// instead of `run()`, which does this automatically.
+    pub fn reset_channels(&mut self) {
+        self.static_channels = StaticChannelSet::new();
+    }
+
     pub fn get_svc_processor<T: SvcProcessor + 'static>(&mut self) -> Option<&mut T> {
         self.static_channels
             .get_by_type_mut::<T>()
