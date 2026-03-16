@@ -568,6 +568,18 @@ impl Sequence for Acceptor {
                     let creds = client_info.client_info.credentials;
 
                     if let Some(expected) = self.creds.as_ref() {
+                        debug!(
+                            expected_user = %expected.username,
+                            expected_pass_len = expected.password.len(),
+                            expected_domain = ?expected.domain,
+                            client_user = %creds.username,
+                            client_pass_len = creds.password.len(),
+                            client_domain = ?creds.domain,
+                            user_match = (expected.username == creds.username),
+                            pass_match = (expected.password == creds.password),
+                            domain_match = (expected.domain == creds.domain),
+                            "Credential comparison"
+                        );
                         if expected != &creds {
                             let info = ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
                                 ProtocolIndependentCode::ServerDeniedConnection,
