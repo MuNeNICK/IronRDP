@@ -156,7 +156,9 @@ impl SvcProcessor for DrdynvcServer {
     }
 
     fn compression_condition(&self) -> CompressionCondition {
-        CompressionCondition::WhenRdpDataIsCompressed
+        // MS-RDPEDYC section 3.3: static virtual channel bulk compression
+        // MUST NOT be used to compress or decompress drdynvc messages.
+        CompressionCondition::Never
     }
 
     fn start(&mut self) -> PduResult<Vec<SvcMessage>> {
