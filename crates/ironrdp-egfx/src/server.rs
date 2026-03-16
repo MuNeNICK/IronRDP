@@ -790,14 +790,7 @@ impl GraphicsPipelineServer {
 
         // MS-RDPEGFX: ResetGraphics MUST precede any CreateSurface.
         // Auto-send on first surface creation if not explicitly sent via resize().
-        // However, some clients (iOS) disconnect on ResetGraphics, so skip it
-        // when output dimensions match the surface dimensions (no actual reset needed).
-        // Skip ResetGraphics when output dimensions already match the surface.
-        // Some clients (iOS Microsoft Remote Desktop) disconnect on ResetGraphics.
-        let needs_reset = !self.reset_graphics_sent
-            && !(self.output_width == width && self.output_height == height);
-        self.reset_graphics_sent = true;
-        if needs_reset {
+        if !self.reset_graphics_sent {
             let desktop_width = if self.output_width > 0 {
                 self.output_width
             } else {
