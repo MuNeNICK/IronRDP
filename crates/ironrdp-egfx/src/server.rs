@@ -1290,6 +1290,53 @@ impl GraphicsPipelineServer {
         chroma_regions: Option<&[Avc420Region]>,
         timestamp_ms: u32,
     ) -> Option<u32> {
+        self.send_avc444_frame_with_codec(
+            Codec1Type::Avc444,
+            surface_id,
+            luma_data,
+            luma_regions,
+            chroma_data,
+            chroma_regions,
+            timestamp_ms,
+        )
+    }
+
+    /// Queue an H.264 AVC444v2 frame for transmission
+    ///
+    /// AVC444v2 uses the same bitmap stream layout as AVC444, but advertises
+    /// `RDPGFX_CODECID_AVC444V2` in the surface update PDU.
+    ///
+    /// Returns `Some(frame_id)` if queued, `None` if not supported or backpressured.
+    pub fn send_avc444v2_frame(
+        &mut self,
+        surface_id: u16,
+        luma_data: &[u8],
+        luma_regions: &[Avc420Region],
+        chroma_data: Option<&[u8]>,
+        chroma_regions: Option<&[Avc420Region]>,
+        timestamp_ms: u32,
+    ) -> Option<u32> {
+        self.send_avc444_frame_with_codec(
+            Codec1Type::Avc444v2,
+            surface_id,
+            luma_data,
+            luma_regions,
+            chroma_data,
+            chroma_regions,
+            timestamp_ms,
+        )
+    }
+
+    fn send_avc444_frame_with_codec(
+        &mut self,
+        codec_id: Codec1Type,
+        surface_id: u16,
+        luma_data: &[u8],
+        luma_regions: &[Avc420Region],
+        chroma_data: Option<&[u8]>,
+        chroma_regions: Option<&[Avc420Region]>,
+        timestamp_ms: u32,
+    ) -> Option<u32> {
         if !self.is_ready() {
             return None;
         }
@@ -1345,7 +1392,7 @@ impl GraphicsPipelineServer {
 
         self.output_queue.push_back(GfxPdu::WireToSurface1(WireToSurface1Pdu {
             surface_id,
-            codec_id: Codec1Type::Avc444,
+            codec_id,
             pixel_format: surface.pixel_format,
             destination_rectangle: target_rect,
             bitmap_data: encoded_stream,
