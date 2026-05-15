@@ -1396,11 +1396,14 @@ impl GraphicsPipelineServer {
 
         let surface = self.surfaces.get(surface_id)?;
 
-        if stream1_regions.is_empty() {
+        if stream1_data.is_empty() || stream1_regions.is_empty() {
             return None;
         }
-        if encoding == Encoding::LUMA_AND_CHROMA && (stream2_data.is_none() || stream2_regions.is_none()) {
-            return None;
+        if encoding == Encoding::LUMA_AND_CHROMA {
+            match (stream2_data, stream2_regions) {
+                (Some(data), Some(regions)) if !data.is_empty() && !regions.is_empty() => {}
+                _ => return None,
+            }
         }
 
         let timestamp = Self::make_timestamp(timestamp_ms);
@@ -1436,7 +1439,11 @@ impl GraphicsPipelineServer {
         };
 
         let encoded_stream = encode_avc444_bitmap_stream(&avc444_stream);
-        let target_rect = Self::compute_dest_rect(stream1_regions, surface.width, surface.height);
+        let target_rect = if let Some(regions) = stream2_regions {
+            Self::compute_dest_rect_for_streams(stream1_regions, regions, surface.width, surface.height)
+        } else {
+            Self::compute_dest_rect(stream1_regions, surface.width, surface.height)
+        };
 
         self.output_queue
             .push_back(GfxPdu::StartFrame(StartFramePdu { timestamp, frame_id }));
@@ -1452,6 +1459,23 @@ impl GraphicsPipelineServer {
         self.output_queue.push_back(GfxPdu::EndFrame(EndFramePdu { frame_id }));
 
         Some(frame_id)
+    }
+
+    fn compute_dest_rect_for_streams(
+        stream1_regions: &[Avc420Region],
+        stream2_regions: &[Avc420Region],
+        default_width: u16,
+        default_height: u16,
+    ) -> InclusiveRectangle {
+        let stream1 = Self::compute_dest_rect(stream1_regions, default_width, default_height);
+        let stream2 = Self::compute_dest_rect(stream2_regions, default_width, default_height);
+
+        InclusiveRectangle {
+            left: stream1.left.min(stream2.left),
+            top: stream1.top.min(stream2.top),
+            right: stream1.right.max(stream2.right),
+            bottom: stream1.bottom.max(stream2.bottom),
+        }
     }
 
     /// Queue an uncompressed bitmap frame for transmission via EGFX
@@ -1680,4 +1704,183 @@ fn encode_avc444_bitmap_stream(stream: &Avc444BitmapStream<'_>) -> Vec<u8> {
         .expect("encode_avc444_bitmap_stream: encoding failed");
 
     buf
+}
+
+#[cfg(test)]
+mod tests {
+    use ironrdp_core::{Decode as _, ReadCursor, encode_vec};
+    use ironrdp_dvc::DvcProcessor as _;
+
+    use super::*;
+
+    const CHANNEL_ID: u32 = 1007;
+
+    struct TestHandler;
+
+    impl GraphicsPipelineHandler for TestHandler {
+        fn capabilities_advertise(&mut self, _pdu: &CapabilitiesAdvertisePdu) {}
+
+        fn on_ready(&mut self, _negotiated: &CapabilitySet) {}
+
+        fn preferred_capabilities(&self) -> Vec<CapabilitySet> {
+            vec![CapabilitySet::V10_7 {
+                flags: CapabilitiesV107Flags::empty(),
+            }]
+        }
+    }
+
+    fn ready_server() -> (GraphicsPipelineServer, u16) {
+        let mut server = GraphicsPipelineServer::new(Box::new(TestHandler));
+        server.start(CHANNEL_ID).expect("channel starts");
+
+        let caps = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu(vec![CapabilitySet::V10_7 {
+            flags: CapabilitiesV107Flags::empty(),
+        }]));
+        let caps = encode_vec(&caps).expect("capabilities encode");
+        let _ = server.process(CHANNEL_ID, &caps).expect("capabilities process");
+
+        let surface_id = server
+            .create_surface_with_format(64, 48, PixelFormat::ARgb)
+            .expect("surface creates");
+        assert!(server.map_surface_to_output(surface_id, 0, 0));
+        let _ = server.drain_output();
+
+        (server, surface_id)
+    }
+
+    fn decode_output_pdu(message: &dyn DvcEncode) -> GfxPdu {
+        let wrapped = encode_vec(message).expect("message encodes");
+        assert_eq!(wrapped[0], 0xe0);
+        assert_eq!(wrapped[1], 0x04);
+
+        let mut cursor = ReadCursor::new(&wrapped[2..]);
+        GfxPdu::decode(&mut cursor).expect("PDU decodes")
+    }
+
+    #[test]
+    fn encoded_frame_uses_negotiated_wire_layout() {
+        let (mut server, surface_id) = ready_server();
+        let stream1_regions = [Avc420Region::new(4, 6, 16, 18, 20, 80)];
+        let stream2_regions = [Avc420Region::new(20, 10, 40, 30, 20, 80)];
+
+        let frame_id = server
+            .send_avc444_frame_with_encoding(
+                Codec1Type::Avc444v2,
+                surface_id,
+                Encoding::LUMA_AND_CHROMA,
+                &[1, 2, 3, 4],
+                &stream1_regions,
+                Some(&[5, 6, 7, 8]),
+                Some(&stream2_regions),
+                1234,
+            )
+            .expect("frame queues");
+
+        let output = server.drain_output();
+        assert_eq!(output.len(), 3);
+
+        match decode_output_pdu(output[0].as_ref()) {
+            GfxPdu::StartFrame(pdu) => assert_eq!(pdu.frame_id, frame_id),
+            pdu => panic!("unexpected first PDU: {pdu:?}"),
+        }
+
+        let wire = match decode_output_pdu(output[1].as_ref()) {
+            GfxPdu::WireToSurface1(pdu) => pdu,
+            pdu => panic!("unexpected second PDU: {pdu:?}"),
+        };
+        assert_eq!(wire.surface_id, surface_id);
+        assert_eq!(wire.codec_id, Codec1Type::Avc444v2);
+        assert_eq!(wire.pixel_format, PixelFormat::ARgb);
+        assert_eq!(
+            wire.destination_rectangle,
+            InclusiveRectangle {
+                left: 4,
+                top: 6,
+                right: 40,
+                bottom: 30,
+            }
+        );
+
+        let mut cursor = ReadCursor::new(&wire.bitmap_data);
+        let bitmap = Avc444BitmapStream::decode(&mut cursor).expect("bitmap decodes");
+        assert_eq!(bitmap.encoding, Encoding::LUMA_AND_CHROMA);
+        assert_eq!(bitmap.stream1.data, &[1, 2, 3, 4]);
+        assert_eq!(bitmap.stream1.rectangles, vec![stream1_regions[0].to_rectangle()]);
+        let stream2 = bitmap.stream2.expect("LC=0 carries stream2");
+        assert_eq!(stream2.data, &[5, 6, 7, 8]);
+        assert_eq!(stream2.rectangles, vec![stream2_regions[0].to_rectangle()]);
+
+        match decode_output_pdu(output[2].as_ref()) {
+            GfxPdu::EndFrame(pdu) => assert_eq!(pdu.frame_id, frame_id),
+            pdu => panic!("unexpected third PDU: {pdu:?}"),
+        }
+    }
+
+    #[test]
+    fn chroma_only_encoding_preserves_lc_value() {
+        let (mut server, surface_id) = ready_server();
+        let regions = [Avc420Region::new(8, 4, 20, 12, 22, 78)];
+
+        server
+            .send_avc444_frame_with_encoding(
+                Codec1Type::Avc444v2,
+                surface_id,
+                Encoding::CHROMA,
+                &[9, 8, 7, 6],
+                &regions,
+                None,
+                None,
+                1234,
+            )
+            .expect("frame queues");
+
+        let output = server.drain_output();
+        let wire = match decode_output_pdu(output[1].as_ref()) {
+            GfxPdu::WireToSurface1(pdu) => pdu,
+            pdu => panic!("unexpected second PDU: {pdu:?}"),
+        };
+        let mut cursor = ReadCursor::new(&wire.bitmap_data);
+        let bitmap = Avc444BitmapStream::decode(&mut cursor).expect("bitmap decodes");
+
+        assert_eq!(bitmap.encoding, Encoding::CHROMA);
+        assert_eq!(bitmap.stream1.data, &[9, 8, 7, 6]);
+        assert_eq!(bitmap.stream1.rectangles, vec![regions[0].to_rectangle()]);
+        assert!(bitmap.stream2.is_none());
+    }
+
+    #[test]
+    fn two_stream_encoding_requires_second_stream_payload() {
+        let (mut server, surface_id) = ready_server();
+        let regions = [Avc420Region::new(0, 0, 16, 16, 20, 80)];
+
+        assert!(
+            server
+                .send_avc444_frame_with_encoding(
+                    Codec1Type::Avc444v2,
+                    surface_id,
+                    Encoding::LUMA_AND_CHROMA,
+                    &[1, 2, 3, 4],
+                    &regions,
+                    Some(&[]),
+                    Some(&regions),
+                    1234,
+                )
+                .is_none()
+        );
+        assert!(
+            server
+                .send_avc444_frame_with_encoding(
+                    Codec1Type::Avc444v2,
+                    surface_id,
+                    Encoding::LUMA_AND_CHROMA,
+                    &[1, 2, 3, 4],
+                    &regions,
+                    Some(&[5, 6, 7, 8]),
+                    Some(&[]),
+                    1234,
+                )
+                .is_none()
+        );
+        assert!(server.drain_output().is_empty());
+    }
 }
