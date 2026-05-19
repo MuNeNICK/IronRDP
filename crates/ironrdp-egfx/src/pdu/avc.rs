@@ -215,7 +215,9 @@ impl<'de> Decode<'de> for Avc444BitmapStream<'de> {
             })
         } else {
             #[expect(clippy::as_conversions, reason = "30-bit value fits in usize")]
-            let (mut stream1, mut stream2) = src.split_at(stream_len as usize);
+            let stream_len = stream_len as usize;
+            ensure_size!(in: src, size: stream_len);
+            let (mut stream1, mut stream2) = src.split_at(stream_len);
             let stream1 = Avc420BitmapStream::decode(&mut stream1)?;
             let stream2 = if encoding == Encoding::LUMA_AND_CHROMA {
                 Some(Avc420BitmapStream::decode(&mut stream2)?)
@@ -552,5 +554,40 @@ mod tests {
         assert_eq!(decoded.rectangles.len(), 1);
         assert_eq!(decoded.quant_qual_vals.len(), 1);
         assert_eq!(decoded.data, &h264_data);
+    }
+
+    #[test]
+    fn avc444_bitmap_stream_rejects_reserved_encoding() {
+        let bytes = 0xc000_0004u32.to_le_bytes();
+        let mut cursor = ReadCursor::new(&bytes);
+
+        assert!(Avc444BitmapStream::decode(&mut cursor).is_err());
+    }
+
+    #[test]
+    fn avc444_bitmap_stream_rejects_stream1_length_past_payload() {
+        let bytes = [
+            0x08, 0x00, 0x00, 0x40, // LC=1, stream1 length=8
+            0x00, 0x00, 0x00, 0x00, // only 4 bytes remain
+        ];
+        let mut cursor = ReadCursor::new(&bytes);
+
+        assert!(Avc444BitmapStream::decode(&mut cursor).is_err());
+    }
+
+    #[test]
+    fn avc444_bitmap_stream_rejects_lc0_without_stream2() {
+        let stream1 = Avc420BitmapStream {
+            rectangles: Vec::new(),
+            quant_qual_vals: Vec::new(),
+            data: &[0xaa, 0xbb],
+        };
+        let stream1_size = u32::try_from(stream1.size()).unwrap();
+        let stream1_bytes = ironrdp_core::encode_vec(&stream1).unwrap();
+        let mut bytes = stream1_size.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&stream1_bytes);
+        let mut cursor = ReadCursor::new(&bytes);
+
+        assert!(Avc444BitmapStream::decode(&mut cursor).is_err());
     }
 }
