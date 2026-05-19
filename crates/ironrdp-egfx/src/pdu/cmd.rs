@@ -1680,7 +1680,7 @@ impl TryFrom<u32> for CapabilityVersion {
             0xa_0601 => CapabilityVersion::V10_6Err,
             0xa_0701 => CapabilityVersion::V10_7,
             0xa_0702 => CapabilityVersion::Unknown,
-            _ => return Err(invalid_field_err!("version", "invalid capability version")),
+            _ => CapabilityVersion::Unknown,
         };
 
         Ok(res)
@@ -2093,5 +2093,33 @@ impl From<Codec2Type> for u16 {
     #[expect(clippy::as_conversions, reason = "repr(u16) enum discriminant")]
     fn from(value: Codec2Type) -> Self {
         value as u16
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capabilities_advertise_decodes_unknown_capability_version() {
+        let bytes = [
+            0x12, 0x00, 0x00, 0x00, 34, 0x00, 0x00, 0x00, // RDPGFX_HEADER
+            0x02, 0x00, // capability count
+            0x00, 0x00, 0x01, 0x00, // unknown capability version
+            0x04, 0x00, 0x00, 0x00, // unknown capability data length
+            0xef, 0xbe, 0xad, 0xde, // unknown capability data
+            0x01, 0x07, 0x0a, 0x00, // RDPGFX_CAPVERSION_107
+            0x04, 0x00, 0x00, 0x00, // V10.7 capability data length
+            0x00, 0x00, 0x00, 0x00, // V10.7 flags
+        ];
+        let mut cursor = ReadCursor::new(&bytes);
+
+        let pdu = GfxPdu::decode(&mut cursor).expect("capabilities advertise decodes");
+        let GfxPdu::CapabilitiesAdvertise(caps) = pdu else {
+            panic!("expected CapabilitiesAdvertise");
+        };
+
+        assert!(matches!(caps.0[0], CapabilitySet::Unknown(_)));
+        assert!(matches!(caps.0[1], CapabilitySet::V10_7 { .. }));
     }
 }
