@@ -557,6 +557,22 @@ mod tests {
     }
 
     #[test]
+    fn avc420_bitmap_stream_allows_empty_payload_with_regions() {
+        let regions = vec![Avc420Region::new(0, 0, 16, 16, 22, 80)];
+
+        let encoded = encode_avc420_bitmap_stream(&regions, &[]);
+
+        assert_eq!(encoded.len(), 4 + 8 + 2);
+
+        let mut cursor = ReadCursor::new(&encoded);
+        let decoded = Avc420BitmapStream::decode(&mut cursor).expect("decode failed");
+
+        assert_eq!(decoded.rectangles.len(), 1);
+        assert_eq!(decoded.quant_qual_vals.len(), 1);
+        assert!(decoded.data.is_empty());
+    }
+
+    #[test]
     fn avc444_bitmap_stream_rejects_reserved_encoding() {
         let bytes = 0xc000_0004u32.to_le_bytes();
         let mut cursor = ReadCursor::new(&bytes);

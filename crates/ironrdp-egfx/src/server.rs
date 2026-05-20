@@ -1327,6 +1327,10 @@ impl GraphicsPipelineServer {
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "AVC444 stream helper mirrors explicit PDU fields"
+    )]
     fn send_avc444_frame_with_codec(
         &mut self,
         codec_id: Codec1Type,
@@ -1371,7 +1375,10 @@ impl GraphicsPipelineServer {
     ///
     /// This method only serializes the already-encoded AVC444 bitmap stream into
     /// a WireToSurface1 PDU. It does not inspect or transform H.264 payloads.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "AVC444 stream helper mirrors explicit PDU fields"
+    )]
     pub fn send_avc444_frame_with_encoding(
         &mut self,
         codec_id: Codec1Type,
@@ -1396,12 +1403,12 @@ impl GraphicsPipelineServer {
 
         let surface = self.surfaces.get(surface_id)?;
 
-        if stream1_data.is_empty() || stream1_regions.is_empty() {
+        if stream1_regions.is_empty() {
             return None;
         }
         if encoding == Encoding::LUMA_AND_CHROMA {
             match (stream2_data, stream2_regions) {
-                (Some(data), Some(regions)) if !data.is_empty() && !regions.is_empty() => {}
+                (Some(_data), Some(regions)) if !regions.is_empty() => {}
                 _ => return None,
             }
         }
@@ -1854,24 +1861,47 @@ mod tests {
     }
 
     #[test]
-    fn two_stream_encoding_requires_second_stream_payload() {
+    fn two_stream_encoding_allows_empty_payloads_with_metadata() {
+        let (mut server, surface_id) = ready_server();
+        let stream1_regions = [Avc420Region::new(0, 0, 16, 16, 20, 80)];
+        let stream2_regions = [Avc420Region::new(16, 0, 32, 16, 20, 80)];
+
+        server
+            .send_avc444_frame_with_encoding(
+                Codec1Type::Avc444v2,
+                surface_id,
+                Encoding::LUMA_AND_CHROMA,
+                &[],
+                &stream1_regions,
+                Some(&[]),
+                Some(&stream2_regions),
+                1234,
+            )
+            .expect("frame queues");
+
+        let output = server.drain_output();
+        assert_eq!(output.len(), 3);
+
+        let wire = match decode_output_pdu(output[1].as_ref()) {
+            GfxPdu::WireToSurface1(pdu) => pdu,
+            pdu => panic!("unexpected second PDU: {pdu:?}"),
+        };
+        let mut cursor = ReadCursor::new(&wire.bitmap_data);
+        let bitmap = Avc444BitmapStream::decode(&mut cursor).expect("bitmap decodes");
+        assert_eq!(bitmap.encoding, Encoding::LUMA_AND_CHROMA);
+        assert!(bitmap.stream1.data.is_empty());
+        assert_eq!(bitmap.stream1.rectangles, vec![stream1_regions[0].to_rectangle()]);
+
+        let stream2 = bitmap.stream2.expect("LC=0 carries stream2");
+        assert!(stream2.data.is_empty());
+        assert_eq!(stream2.rectangles, vec![stream2_regions[0].to_rectangle()]);
+    }
+
+    #[test]
+    fn two_stream_encoding_requires_second_stream_metadata() {
         let (mut server, surface_id) = ready_server();
         let regions = [Avc420Region::new(0, 0, 16, 16, 20, 80)];
 
-        assert!(
-            server
-                .send_avc444_frame_with_encoding(
-                    Codec1Type::Avc444v2,
-                    surface_id,
-                    Encoding::LUMA_AND_CHROMA,
-                    &[1, 2, 3, 4],
-                    &regions,
-                    Some(&[]),
-                    Some(&regions),
-                    1234,
-                )
-                .is_none()
-        );
         assert!(
             server
                 .send_avc444_frame_with_encoding(
