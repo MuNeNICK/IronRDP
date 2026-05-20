@@ -1597,6 +1597,11 @@ impl GraphicsPipelineServer {
             })
         });
 
+        if self.state == ServerState::Ready && self.negotiated_caps.as_ref() == Some(&negotiated) {
+            trace!(?negotiated, "Ignoring duplicate graphics capabilities advertise");
+            return;
+        }
+
         self.codec_caps = CodecCapabilities::from_capability_set(&negotiated);
         self.negotiated_caps = Some(negotiated.clone());
 
