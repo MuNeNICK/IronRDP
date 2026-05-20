@@ -1,4 +1,4 @@
-use ironrdp_core::{Encode, WriteCursor};
+use ironrdp_core::{Decode as _, Encode, ReadCursor, WriteCursor};
 use ironrdp_dvc::DvcProcessor as _;
 use ironrdp_egfx::pdu::{
     Avc420Region, CapabilitiesAdvertisePdu, CapabilitiesV8Flags, CapabilitiesV10Flags, CapabilitiesV81Flags,
@@ -58,11 +58,20 @@ impl GraphicsPipelineHandler for TestHandler {
 // ============================================================================
 
 /// Encode a PDU to bytes for sending to server's process() method
-fn encode_pdu<T: Encode>(pdu: &T) -> Vec<u8> {
+fn encode_pdu<T: Encode + ?Sized>(pdu: &T) -> Vec<u8> {
     let mut buf = vec![0u8; pdu.size()];
     let mut cursor = WriteCursor::new(&mut buf);
     pdu.encode(&mut cursor).expect("encode failed");
     buf
+}
+
+fn decode_output_pdu(message: &dyn ironrdp_dvc::DvcEncode) -> GfxPdu {
+    let payload = encode_pdu(message);
+    assert_eq!(payload[0], 0xe0);
+    assert_eq!(payload[1], 0x04);
+
+    let mut cursor = ReadCursor::new(&payload[2..]);
+    GfxPdu::decode(&mut cursor).expect("PDU decodes")
 }
 
 // ============================================================================
@@ -132,6 +141,34 @@ fn test_capability_negotiation_v10_avc444() {
     assert!(server.is_ready());
     assert!(server.supports_avc420());
     assert!(server.supports_avc444());
+}
+
+#[test]
+fn test_capability_negotiation_v10_preserves_avc_disabled() {
+    let handler = Box::new(TestHandler::new());
+    let mut server = GraphicsPipelineServer::new(handler);
+
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu(vec![CapabilitySet::V10 {
+        flags: CapabilitiesV10Flags::SMALL_CACHE | CapabilitiesV10Flags::AVC_DISABLED,
+    }]));
+
+    let payload = encode_pdu(&client_caps_pdu);
+    let output = server.process(0, &payload).expect("process failed");
+
+    assert!(server.is_ready());
+    assert!(!server.supports_avc420());
+    assert!(!server.supports_avc444());
+    assert_eq!(output.len(), 1);
+
+    match decode_output_pdu(output[0].as_ref()) {
+        GfxPdu::CapabilitiesConfirm(confirm) => match confirm.0 {
+            CapabilitySet::V10 { flags } => {
+                assert!(flags.contains(CapabilitiesV10Flags::AVC_DISABLED));
+            }
+            cap => panic!("unexpected confirmed capability: {cap:?}"),
+        },
+        pdu => panic!("unexpected output PDU: {pdu:?}"),
+    }
 }
 
 #[test]

@@ -714,28 +714,30 @@ fn intersect_flags(client: &CapabilitySet, server: &CapabilitySet) -> Capability
         (CapabilitySet::V8_1 { flags: cf }, CapabilitySet::V8_1 { flags: sf }) => {
             CapabilitySet::V8_1 { flags: *cf & *sf }
         }
-        (CapabilitySet::V10 { flags: cf }, CapabilitySet::V10 { flags: sf }) => CapabilitySet::V10 { flags: *cf & *sf },
-        (CapabilitySet::V10_2 { flags: cf }, CapabilitySet::V10_2 { flags: sf }) => {
-            CapabilitySet::V10_2 { flags: *cf & *sf }
-        }
-        (CapabilitySet::V10_3 { flags: cf }, CapabilitySet::V10_3 { flags: sf }) => {
-            CapabilitySet::V10_3 { flags: *cf & *sf }
-        }
-        (CapabilitySet::V10_4 { flags: cf }, CapabilitySet::V10_4 { flags: sf }) => {
-            CapabilitySet::V10_4 { flags: *cf & *sf }
-        }
-        (CapabilitySet::V10_5 { flags: cf }, CapabilitySet::V10_5 { flags: sf }) => {
-            CapabilitySet::V10_5 { flags: *cf & *sf }
-        }
-        (CapabilitySet::V10_6 { flags: cf }, CapabilitySet::V10_6 { flags: sf }) => {
-            CapabilitySet::V10_6 { flags: *cf & *sf }
-        }
-        (CapabilitySet::V10_6Err { flags: cf }, CapabilitySet::V10_6Err { flags: sf }) => {
-            CapabilitySet::V10_6Err { flags: *cf & *sf }
-        }
-        (CapabilitySet::V10_7 { flags: cf }, CapabilitySet::V10_7 { flags: sf }) => {
-            CapabilitySet::V10_7 { flags: *cf & *sf }
-        }
+        (CapabilitySet::V10 { flags: cf }, CapabilitySet::V10 { flags: sf }) => CapabilitySet::V10 {
+            flags: (*cf & *sf) | (*cf & CapabilitiesV10Flags::AVC_DISABLED),
+        },
+        (CapabilitySet::V10_2 { flags: cf }, CapabilitySet::V10_2 { flags: sf }) => CapabilitySet::V10_2 {
+            flags: (*cf & *sf) | (*cf & CapabilitiesV10Flags::AVC_DISABLED),
+        },
+        (CapabilitySet::V10_3 { flags: cf }, CapabilitySet::V10_3 { flags: sf }) => CapabilitySet::V10_3 {
+            flags: (*cf & *sf) | (*cf & CapabilitiesV103Flags::AVC_DISABLED),
+        },
+        (CapabilitySet::V10_4 { flags: cf }, CapabilitySet::V10_4 { flags: sf }) => CapabilitySet::V10_4 {
+            flags: (*cf & *sf) | (*cf & CapabilitiesV104Flags::AVC_DISABLED),
+        },
+        (CapabilitySet::V10_5 { flags: cf }, CapabilitySet::V10_5 { flags: sf }) => CapabilitySet::V10_5 {
+            flags: (*cf & *sf) | (*cf & CapabilitiesV104Flags::AVC_DISABLED),
+        },
+        (CapabilitySet::V10_6 { flags: cf }, CapabilitySet::V10_6 { flags: sf }) => CapabilitySet::V10_6 {
+            flags: (*cf & *sf) | (*cf & CapabilitiesV104Flags::AVC_DISABLED),
+        },
+        (CapabilitySet::V10_6Err { flags: cf }, CapabilitySet::V10_6Err { flags: sf }) => CapabilitySet::V10_6Err {
+            flags: (*cf & *sf) | (*cf & CapabilitiesV104Flags::AVC_DISABLED),
+        },
+        (CapabilitySet::V10_7 { flags: cf }, CapabilitySet::V10_7 { flags: sf }) => CapabilitySet::V10_7 {
+            flags: (*cf & *sf) | (*cf & CapabilitiesV107Flags::AVC_DISABLED),
+        },
         // V10_1 has no flags; Unknown and mismatched variants return server as-is.
         _ => server.clone(),
     }
@@ -1917,5 +1919,26 @@ mod tests {
                 .is_none()
         );
         assert!(server.drain_output().is_empty());
+    }
+
+    #[test]
+    fn capability_negotiation_preserves_client_avc_disabled_flag() {
+        let negotiated = negotiate_capabilities(
+            &[CapabilitySet::V10 {
+                flags: CapabilitiesV10Flags::SMALL_CACHE | CapabilitiesV10Flags::AVC_DISABLED,
+            }],
+            &[CapabilitySet::V10 {
+                flags: CapabilitiesV10Flags::empty(),
+            }],
+        )
+        .expect("V10 capability negotiates");
+
+        match negotiated {
+            CapabilitySet::V10 { flags } => {
+                assert!(flags.contains(CapabilitiesV10Flags::AVC_DISABLED));
+                assert!(!flags.contains(CapabilitiesV10Flags::SMALL_CACHE));
+            }
+            cap => panic!("unexpected negotiated capability: {cap:?}"),
+        }
     }
 }
