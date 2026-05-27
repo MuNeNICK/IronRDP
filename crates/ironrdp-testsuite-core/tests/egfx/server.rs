@@ -286,6 +286,38 @@ fn test_frame_flow_control() {
     assert!(frame3.is_none());
 }
 
+#[test]
+fn test_avc420_destination_rectangle_uses_exclusive_region_bounds() {
+    let handler = Box::new(TestHandler::new());
+    let mut server = GraphicsPipelineServer::new(handler);
+
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V8_1 {
+        flags: CapabilitiesV81Flags::AVC420_ENABLED,
+    }]));
+    let payload = encode_pdu(&client_caps_pdu);
+    let _output = server.process(0, &payload).expect("process failed");
+
+    let surface_id = server.create_surface(64, 64).unwrap();
+    server.drain_output();
+
+    let h264_data = vec![0x00, 0x00, 0x00, 0x01, 0x67];
+    let regions = vec![Avc420Region::new(4, 6, 20, 22, 22, 80)];
+    let frame_id = server.send_avc420_frame(surface_id, &h264_data, &regions, 0);
+    assert!(frame_id.is_some());
+
+    let output = server.drain_output();
+    assert_eq!(output.len(), 3);
+    match decode_output_pdu(output[1].as_ref()) {
+        GfxPdu::WireToSurface1(wire) => {
+            assert_eq!(wire.destination_rectangle.left, 4);
+            assert_eq!(wire.destination_rectangle.top, 6);
+            assert_eq!(wire.destination_rectangle.right, 20);
+            assert_eq!(wire.destination_rectangle.bottom, 22);
+        }
+        pdu => panic!("unexpected output PDU: {pdu:?}"),
+    }
+}
+
 // ============================================================================
 // QoE Statistics Tests
 // ============================================================================

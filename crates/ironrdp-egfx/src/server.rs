@@ -1238,9 +1238,8 @@ impl GraphicsPipelineServer {
 
     /// Compute bounding rectangle from regions.
     ///
-    /// Avc420Region uses inclusive bounds; the wire format (RDPGFX_RECT16) is
-    /// exclusive, so the returned ExclusiveRectangle adds 1 to the max right
-    /// and bottom of the inclusive bounding box.
+    /// Avc420Region carries RDPGFX_RECT16 wire bounds. Those bounds are
+    /// exclusive, so the bounding rectangle keeps the max right and bottom as-is.
     fn compute_dest_rect(regions: &[Avc420Region], default_width: u16, default_height: u16) -> ExclusiveRectangle {
         if let Some(first) = regions.first() {
             let mut left = first.left;
@@ -1258,8 +1257,8 @@ impl GraphicsPipelineServer {
             ExclusiveRectangle {
                 left,
                 top,
-                right: right.saturating_add(1),
-                bottom: bottom.saturating_add(1),
+                right,
+                bottom,
             }
         } else {
             ExclusiveRectangle {
