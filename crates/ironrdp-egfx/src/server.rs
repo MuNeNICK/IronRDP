@@ -62,7 +62,7 @@ use ironrdp_core::{Encode, EncodeResult, WriteCursor, decode, impl_as_any};
 use ironrdp_dvc::{DvcEncode, DvcMessage, DvcProcessor, DvcServerProcessor};
 use ironrdp_graphics::zgfx::{CompressionMode, Compressor, compress_and_wrap_egfx, wrap_uncompressed};
 use ironrdp_pdu::gcc::Monitor;
-use ironrdp_pdu::geometry::InclusiveRectangle;
+use ironrdp_pdu::geometry::ExclusiveRectangle;
 use ironrdp_pdu::{PduResult, decode_err};
 use tracing::{debug, trace, warn};
 
@@ -70,9 +70,10 @@ use crate::CHANNEL_NAME;
 use crate::pdu::{
     Avc420BitmapStream, Avc420Region, Avc444BitmapStream, CacheImportOfferPdu, CacheImportReplyPdu,
     CapabilitiesAdvertisePdu, CapabilitiesConfirmPdu, CapabilitiesV8Flags, CapabilitiesV10Flags, CapabilitiesV81Flags,
-    CapabilitiesV103Flags, CapabilitiesV104Flags, CapabilitiesV107Flags, CapabilitySet, Codec1Type, CreateSurfacePdu,
-    DeleteSurfacePdu, Encoding, EndFramePdu, FrameAcknowledgePdu, GfxPdu, MapSurfaceToOutputPdu, PixelFormat,
-    QoeFrameAcknowledgePdu, ResetGraphicsPdu, StartFramePdu, Timestamp, WireToSurface1Pdu, encode_avc420_bitmap_stream,
+    CapabilitiesV103Flags, CapabilitiesV104Flags, CapabilitiesV107Flags, CapabilitySet, Codec1Type, Codec2Type,
+    CreateSurfacePdu, DeleteSurfacePdu, Encoding, EndFramePdu, FrameAcknowledgePdu, GfxPdu, MapSurfaceToOutputPdu,
+    PixelFormat, QoeFrameAcknowledgePdu, ResetGraphicsPdu, StartFramePdu, Timestamp, WireToSurface1Pdu,
+    WireToSurface2Pdu, encode_avc420_bitmap_stream,
 };
 
 // ============================================================================
@@ -120,6 +121,7 @@ impl DvcEncode for ZgfxWrappedBytes {}
 /// Per MS-RDPEGFX, the server maintains an "Offscreen Surfaces ADM element"
 /// which is a list of surfaces created on the client.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Surface {
     /// Surface identifier (unique per session)
     pub id: u16,
@@ -229,6 +231,7 @@ impl Surfaces {
 /// Per MS-RDPEGFX, the server maintains an "Unacknowledged Frames ADM element"
 /// which tracks frames sent but not yet acknowledged.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct FrameInfo {
     /// Frame identifier
     pub frame_id: u32,
@@ -242,6 +245,7 @@ pub struct FrameInfo {
 
 /// Quality of Experience metrics from client
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct QoeMetrics {
     /// Frame ID this relates to
     pub frame_id: u32,
@@ -423,6 +427,7 @@ impl Default for QoeCollector {
 ///
 /// Returned by [`GraphicsPipelineServer::qoe_snapshot()`].
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct QoeSnapshot {
     /// Total QoE reports received from client.
     pub total_qoe_reports: u64,
@@ -607,6 +612,7 @@ impl FrameTracker {
 
 /// Codec capabilities determined from negotiation
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct CodecCapabilities {
     /// AVC420 (H.264 4:2:0) is available
     pub avc420: bool,
@@ -668,7 +674,6 @@ impl CodecCapabilities {
                 small_cache: flags.contains(CapabilitiesV107Flags::SMALL_CACHE),
                 thin_client: flags.contains(CapabilitiesV107Flags::AVC_THIN_CLIENT),
             },
-            CapabilitySet::Unknown(_) => Self::default(),
         }
     }
 }
@@ -687,7 +692,6 @@ fn capability_priority(cap: &CapabilitySet) -> u32 {
         CapabilitySet::V10 { .. } => 4,
         CapabilitySet::V8_1 { .. } => 3,
         CapabilitySet::V8 { .. } => 2,
-        _ => 0,
     }
 }
 
@@ -738,7 +742,7 @@ fn intersect_flags(client: &CapabilitySet, server: &CapabilitySet) -> Capability
         (CapabilitySet::V10_7 { flags: cf }, CapabilitySet::V10_7 { flags: sf }) => CapabilitySet::V10_7 {
             flags: (*cf & *sf) | (*cf & CapabilitiesV107Flags::AVC_DISABLED),
         },
-        // V10_1 has no flags; Unknown and mismatched variants return server as-is.
+        // V10_1 has no flags; mismatched variants return server as-is.
         _ => server.clone(),
     }
 }
@@ -863,6 +867,39 @@ pub struct GraphicsPipelineServer {
     zgfx_compressor: Compressor,
     /// Whether to compress EGFX output with ZGFX
     compression_mode: CompressionMode,
+}
+
+/// Payload for a single tile within a mixed-codec frame.
+///
+/// Each variant corresponds to a different EGFX codec. Used with
+/// [`GraphicsPipelineServer::send_mixed_frame()`] to pack multiple codec
+/// types into a single `StartFrame`/`EndFrame` pair.
+///
+/// Marked `#[non_exhaustive]` so future EGFX codec additions (for example,
+/// Avc444 or hardware-accelerated paths) can land without a SemVer break
+/// for downstream consumers that pattern-match on this enum.
+#[non_exhaustive]
+pub enum MixedTilePayload {
+    /// Lossless ClearCodec tile (text, UI elements, icons).
+    /// `bitmap_data` is a pre-encoded ClearCodec bitmap stream.
+    /// `destination` uses `ExclusiveRectangle` to match the spec-defined
+    /// `WireToSurface1Pdu.destination_rectangle` field type (MS-RDPEGFX
+    /// 2.2.1.4.1: right/bottom are exclusive).
+    ClearCodec {
+        destination: ExclusiveRectangle,
+        bitmap_data: Vec<u8>,
+    },
+    /// RemoteFX Progressive tile (photos, gradients).
+    /// `progressive_data` is a valid progressive block stream.
+    RemoteFxProgressive {
+        codec_context_id: u32,
+        progressive_data: Vec<u8>,
+    },
+    /// H.264 AVC420 tile (video, high-motion content).
+    Avc420 {
+        regions: Vec<Avc420Region>,
+        h264_data: Vec<u8>,
+    },
 }
 
 impl GraphicsPipelineServer {
@@ -1199,8 +1236,12 @@ impl GraphicsPipelineServer {
         }
     }
 
-    /// Compute bounding rectangle from regions
-    fn compute_dest_rect(regions: &[Avc420Region], default_width: u16, default_height: u16) -> InclusiveRectangle {
+    /// Compute bounding rectangle from regions.
+    ///
+    /// Avc420Region uses inclusive bounds; the wire format (RDPGFX_RECT16) is
+    /// exclusive, so the returned ExclusiveRectangle adds 1 to the max right
+    /// and bottom of the inclusive bounding box.
+    fn compute_dest_rect(regions: &[Avc420Region], default_width: u16, default_height: u16) -> ExclusiveRectangle {
         if let Some(first) = regions.first() {
             let mut left = first.left;
             let mut top = first.top;
@@ -1214,18 +1255,18 @@ impl GraphicsPipelineServer {
                 bottom = bottom.max(r.bottom);
             }
 
-            InclusiveRectangle {
+            ExclusiveRectangle {
                 left,
                 top,
-                right,
-                bottom,
+                right: right.saturating_add(1),
+                bottom: bottom.saturating_add(1),
             }
         } else {
-            InclusiveRectangle {
+            ExclusiveRectangle {
                 left: 0,
                 top: 0,
-                right: default_width.saturating_sub(1),
-                bottom: default_height.saturating_sub(1),
+                right: default_width,
+                bottom: default_height,
             }
         }
     }
@@ -1303,7 +1344,7 @@ impl GraphicsPipelineServer {
         )
     }
 
-    /// Queue an H.264 AVC444v2 frame for transmission
+    /// Queue an H.264 AVC444v2 frame for transmission.
     ///
     /// AVC444v2 uses the same bitmap stream layout as AVC444, but advertises
     /// `RDPGFX_CODECID_AVC444V2` in the surface update PDU.
@@ -1475,11 +1516,11 @@ impl GraphicsPipelineServer {
         stream2_regions: &[Avc420Region],
         default_width: u16,
         default_height: u16,
-    ) -> InclusiveRectangle {
+    ) -> ExclusiveRectangle {
         let stream1 = Self::compute_dest_rect(stream1_regions, default_width, default_height);
         let stream2 = Self::compute_dest_rect(stream2_regions, default_width, default_height);
 
-        InclusiveRectangle {
+        ExclusiveRectangle {
             left: stream1.left.min(stream2.left),
             top: stream1.top.min(stream2.top),
             right: stream1.right.max(stream2.right),
@@ -1516,11 +1557,11 @@ impl GraphicsPipelineServer {
         let timestamp = Self::make_timestamp(timestamp_ms);
         let frame_id = self.frames.begin_frame(timestamp);
 
-        let dest_rect = InclusiveRectangle {
+        let dest_rect = ExclusiveRectangle {
             left: 0,
             top: 0,
-            right: dest_width.saturating_sub(1),
-            bottom: dest_height.saturating_sub(1),
+            right: dest_width,
+            bottom: dest_height,
         };
 
         self.output_queue
@@ -1533,6 +1574,137 @@ impl GraphicsPipelineServer {
             destination_rectangle: dest_rect,
             bitmap_data: bitmap_data.to_vec(),
         }));
+
+        self.output_queue.push_back(GfxPdu::EndFrame(EndFramePdu { frame_id }));
+
+        Some(frame_id)
+    }
+
+    /// Queue a RemoteFX Progressive frame for transmission.
+    ///
+    /// Progressive frames use `WireToSurface2Pdu` with a pre-encoded progressive
+    /// block stream as the bitmap payload. The `codec_context_id` associates
+    /// this data with persistent tile state on the client.
+    ///
+    /// The `progressive_data` must be a valid progressive block stream
+    /// (SYNC + CONTEXT + FRAME_BEGIN + REGION + FRAME_END) as produced by
+    /// `ironrdp_pdu::codecs::rfx::progressive::encode_progressive_stream()`.
+    ///
+    /// Returns `Some(frame_id)` if queued, `None` if not ready or backpressured.
+    pub fn send_remotefx_progressive_frame(
+        &mut self,
+        surface_id: u16,
+        codec_context_id: u32,
+        progressive_data: Vec<u8>,
+        timestamp_ms: u32,
+    ) -> Option<u32> {
+        if !self.is_ready() {
+            return None;
+        }
+        if self.should_backpressure() {
+            return None;
+        }
+
+        let surface = self.surfaces.get(surface_id)?;
+
+        let timestamp = Self::make_timestamp(timestamp_ms);
+        let frame_id = self.frames.begin_frame(timestamp);
+
+        self.output_queue
+            .push_back(GfxPdu::StartFrame(StartFramePdu { timestamp, frame_id }));
+
+        self.output_queue.push_back(GfxPdu::WireToSurface2(WireToSurface2Pdu {
+            surface_id,
+            codec_id: Codec2Type::RemoteFxProgressive,
+            codec_context_id,
+            pixel_format: surface.pixel_format,
+            bitmap_data: progressive_data,
+        }));
+
+        self.output_queue.push_back(GfxPdu::EndFrame(EndFramePdu { frame_id }));
+
+        Some(frame_id)
+    }
+
+    // ========================================================================
+    // Mixed-Codec Frame Support
+    // ========================================================================
+
+    /// Queue a mixed-codec frame containing tiles encoded with different codecs.
+    ///
+    /// This is the core of multi-codec EGFX: a single frame update can contain
+    /// ClearCodec tiles (lossless text), Progressive tiles (photos), and H.264
+    /// tiles (video), all sent between one `StartFrame`/`EndFrame` pair.
+    ///
+    /// This matches how Azure VDI achieves its visual quality — each tile uses
+    /// the codec best suited to its content type.
+    ///
+    /// Returns `Some(frame_id)` if queued, `None` if not ready or backpressured.
+    pub fn send_mixed_frame(
+        &mut self,
+        surface_id: u16,
+        tiles: Vec<MixedTilePayload>,
+        timestamp_ms: u32,
+    ) -> Option<u32> {
+        if !self.is_ready() {
+            return None;
+        }
+        if self.should_backpressure() {
+            return None;
+        }
+        if tiles.is_empty() {
+            return None;
+        }
+
+        let surface = self.surfaces.get(surface_id)?;
+        let pixel_format = surface.pixel_format;
+
+        let timestamp = Self::make_timestamp(timestamp_ms);
+        let frame_id = self.frames.begin_frame(timestamp);
+
+        self.output_queue
+            .push_back(GfxPdu::StartFrame(StartFramePdu { timestamp, frame_id }));
+
+        for tile in tiles {
+            match tile {
+                MixedTilePayload::ClearCodec {
+                    destination,
+                    bitmap_data,
+                } => {
+                    self.output_queue.push_back(GfxPdu::WireToSurface1(WireToSurface1Pdu {
+                        surface_id,
+                        codec_id: Codec1Type::ClearCodec,
+                        pixel_format,
+                        destination_rectangle: destination,
+                        bitmap_data,
+                    }));
+                }
+                MixedTilePayload::RemoteFxProgressive {
+                    codec_context_id,
+                    progressive_data,
+                } => {
+                    self.output_queue.push_back(GfxPdu::WireToSurface2(WireToSurface2Pdu {
+                        surface_id,
+                        codec_id: Codec2Type::RemoteFxProgressive,
+                        codec_context_id,
+                        pixel_format,
+                        bitmap_data: progressive_data,
+                    }));
+                }
+                MixedTilePayload::Avc420 { regions, h264_data } => {
+                    let encoded_stream = encode_avc420_bitmap_stream(&regions, &h264_data);
+                    let target_rect = Self::compute_dest_rect(&regions, surface.width, surface.height);
+
+                    self.output_queue.push_back(GfxPdu::WireToSurface1(WireToSurface1Pdu {
+                        surface_id,
+                        codec_id: Codec1Type::Avc420,
+                        pixel_format,
+                        destination_rectangle: target_rect,
+                        bitmap_data: encoded_stream,
+                    }));
+                }
+            }
+        }
 
         self.output_queue.push_back(GfxPdu::EndFrame(EndFramePdu { frame_id }));
 
@@ -1594,31 +1766,44 @@ impl GraphicsPipelineServer {
         self.handler.capabilities_advertise(&pdu);
         let server_caps = self.handler.preferred_capabilities();
 
+        // Parse client raw caps into typed. Silently skip unknown versions for
+        // negotiation purposes (the raw form is still observable in `pdu`), but
+        // treat parse failures for known versions as malformed input instead of
+        // negotiating as if the client never advertised them.
+        let mut client_caps = Vec::with_capacity(pdu.0.len());
+        for raw in &pdu.0 {
+            match raw.parsed() {
+                Ok(Some(cap)) => client_caps.push(cap),
+                Ok(None) => {}
+                Err(e) => {
+                    warn!(error = ?e, "Received malformed client capability set; aborting capability negotiation");
+                    return;
+                }
+            }
+        }
+
         // When no version overlaps with server preferences, confirm the client's
         // highest-priority capability to avoid confirming a version the client
         // did not advertise.
-        let negotiated = negotiate_capabilities(&pdu.0, &server_caps).unwrap_or_else(|| {
+        let negotiated = negotiate_capabilities(&client_caps, &server_caps).unwrap_or_else(|| {
             warn!("No capability match with server preferences, selecting client's highest version");
-            let mut client_sorted = pdu.0.clone();
+            let mut client_sorted = client_caps.clone();
             client_sorted.sort_by_key(|cap| core::cmp::Reverse(capability_priority(cap)));
             client_sorted.into_iter().next().unwrap_or(CapabilitySet::V8 {
                 flags: CapabilitiesV8Flags::empty(),
             })
         });
 
-        if self.state == ServerState::Ready && self.negotiated_caps.as_ref() == Some(&negotiated) {
-            trace!(?negotiated, "Ignoring duplicate graphics capabilities advertise");
-            return;
-        }
-
         self.codec_caps = CodecCapabilities::from_capability_set(&negotiated);
-        self.negotiated_caps = Some(negotiated.clone());
+        self.state = ServerState::Ready;
+        let negotiated = self.negotiated_caps.insert(negotiated);
 
         self.output_queue
-            .push_back(GfxPdu::CapabilitiesConfirm(CapabilitiesConfirmPdu(negotiated.clone())));
+            .push_back(GfxPdu::CapabilitiesConfirm(CapabilitiesConfirmPdu::from_typed(
+                negotiated,
+            )));
 
-        self.state = ServerState::Ready;
-        self.handler.on_ready(&negotiated);
+        self.handler.on_ready(negotiated);
     }
 
     fn handle_frame_acknowledge(&mut self, pdu: FrameAcknowledgePdu) {
@@ -1718,227 +1903,4 @@ fn encode_avc444_bitmap_stream(stream: &Avc444BitmapStream<'_>) -> Vec<u8> {
         .expect("encode_avc444_bitmap_stream: encoding failed");
 
     buf
-}
-
-#[cfg(test)]
-mod tests {
-    use ironrdp_core::{Decode as _, ReadCursor, encode_vec};
-    use ironrdp_dvc::DvcProcessor as _;
-
-    use super::*;
-
-    const CHANNEL_ID: u32 = 1007;
-
-    struct TestHandler;
-
-    impl GraphicsPipelineHandler for TestHandler {
-        fn capabilities_advertise(&mut self, _pdu: &CapabilitiesAdvertisePdu) {}
-
-        fn on_ready(&mut self, _negotiated: &CapabilitySet) {}
-
-        fn preferred_capabilities(&self) -> Vec<CapabilitySet> {
-            vec![CapabilitySet::V10_7 {
-                flags: CapabilitiesV107Flags::empty(),
-            }]
-        }
-    }
-
-    fn ready_server() -> (GraphicsPipelineServer, u16) {
-        let mut server = GraphicsPipelineServer::new(Box::new(TestHandler));
-        server.start(CHANNEL_ID).expect("channel starts");
-
-        let caps = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu(vec![CapabilitySet::V10_7 {
-            flags: CapabilitiesV107Flags::empty(),
-        }]));
-        let caps = encode_vec(&caps).expect("capabilities encode");
-        let _ = server.process(CHANNEL_ID, &caps).expect("capabilities process");
-
-        let surface_id = server
-            .create_surface_with_format(64, 48, PixelFormat::ARgb)
-            .expect("surface creates");
-        assert!(server.map_surface_to_output(surface_id, 0, 0));
-        let _ = server.drain_output();
-
-        (server, surface_id)
-    }
-
-    fn decode_output_pdu(message: &dyn DvcEncode) -> GfxPdu {
-        let wrapped = encode_vec(message).expect("message encodes");
-        assert_eq!(wrapped[0], 0xe0);
-        assert_eq!(wrapped[1], 0x04);
-
-        let mut cursor = ReadCursor::new(&wrapped[2..]);
-        GfxPdu::decode(&mut cursor).expect("PDU decodes")
-    }
-
-    #[test]
-    fn encoded_frame_uses_negotiated_wire_layout() {
-        let (mut server, surface_id) = ready_server();
-        let stream1_regions = [Avc420Region::new(4, 6, 16, 18, 20, 80)];
-        let stream2_regions = [Avc420Region::new(20, 10, 40, 30, 20, 80)];
-
-        let frame_id = server
-            .send_avc444_frame_with_encoding(
-                Codec1Type::Avc444v2,
-                surface_id,
-                Encoding::LUMA_AND_CHROMA,
-                &[1, 2, 3, 4],
-                &stream1_regions,
-                Some(&[5, 6, 7, 8]),
-                Some(&stream2_regions),
-                1234,
-            )
-            .expect("frame queues");
-
-        let output = server.drain_output();
-        assert_eq!(output.len(), 3);
-
-        match decode_output_pdu(output[0].as_ref()) {
-            GfxPdu::StartFrame(pdu) => assert_eq!(pdu.frame_id, frame_id),
-            pdu => panic!("unexpected first PDU: {pdu:?}"),
-        }
-
-        let wire = match decode_output_pdu(output[1].as_ref()) {
-            GfxPdu::WireToSurface1(pdu) => pdu,
-            pdu => panic!("unexpected second PDU: {pdu:?}"),
-        };
-        assert_eq!(wire.surface_id, surface_id);
-        assert_eq!(wire.codec_id, Codec1Type::Avc444v2);
-        assert_eq!(wire.pixel_format, PixelFormat::ARgb);
-        assert_eq!(
-            wire.destination_rectangle,
-            InclusiveRectangle {
-                left: 4,
-                top: 6,
-                right: 40,
-                bottom: 30,
-            }
-        );
-
-        let mut cursor = ReadCursor::new(&wire.bitmap_data);
-        let bitmap = Avc444BitmapStream::decode(&mut cursor).expect("bitmap decodes");
-        assert_eq!(bitmap.encoding, Encoding::LUMA_AND_CHROMA);
-        assert_eq!(bitmap.stream1.data, &[1, 2, 3, 4]);
-        assert_eq!(bitmap.stream1.rectangles, vec![stream1_regions[0].to_rectangle()]);
-        let stream2 = bitmap.stream2.expect("LC=0 carries stream2");
-        assert_eq!(stream2.data, &[5, 6, 7, 8]);
-        assert_eq!(stream2.rectangles, vec![stream2_regions[0].to_rectangle()]);
-
-        match decode_output_pdu(output[2].as_ref()) {
-            GfxPdu::EndFrame(pdu) => assert_eq!(pdu.frame_id, frame_id),
-            pdu => panic!("unexpected third PDU: {pdu:?}"),
-        }
-    }
-
-    #[test]
-    fn chroma_only_encoding_preserves_lc_value() {
-        let (mut server, surface_id) = ready_server();
-        let regions = [Avc420Region::new(8, 4, 20, 12, 22, 78)];
-
-        server
-            .send_avc444_frame_with_encoding(
-                Codec1Type::Avc444v2,
-                surface_id,
-                Encoding::CHROMA,
-                &[9, 8, 7, 6],
-                &regions,
-                None,
-                None,
-                1234,
-            )
-            .expect("frame queues");
-
-        let output = server.drain_output();
-        let wire = match decode_output_pdu(output[1].as_ref()) {
-            GfxPdu::WireToSurface1(pdu) => pdu,
-            pdu => panic!("unexpected second PDU: {pdu:?}"),
-        };
-        let mut cursor = ReadCursor::new(&wire.bitmap_data);
-        let bitmap = Avc444BitmapStream::decode(&mut cursor).expect("bitmap decodes");
-
-        assert_eq!(bitmap.encoding, Encoding::CHROMA);
-        assert_eq!(bitmap.stream1.data, &[9, 8, 7, 6]);
-        assert_eq!(bitmap.stream1.rectangles, vec![regions[0].to_rectangle()]);
-        assert!(bitmap.stream2.is_none());
-    }
-
-    #[test]
-    fn two_stream_encoding_allows_empty_payloads_with_metadata() {
-        let (mut server, surface_id) = ready_server();
-        let stream1_regions = [Avc420Region::new(0, 0, 16, 16, 20, 80)];
-        let stream2_regions = [Avc420Region::new(16, 0, 32, 16, 20, 80)];
-
-        server
-            .send_avc444_frame_with_encoding(
-                Codec1Type::Avc444v2,
-                surface_id,
-                Encoding::LUMA_AND_CHROMA,
-                &[],
-                &stream1_regions,
-                Some(&[]),
-                Some(&stream2_regions),
-                1234,
-            )
-            .expect("frame queues");
-
-        let output = server.drain_output();
-        assert_eq!(output.len(), 3);
-
-        let wire = match decode_output_pdu(output[1].as_ref()) {
-            GfxPdu::WireToSurface1(pdu) => pdu,
-            pdu => panic!("unexpected second PDU: {pdu:?}"),
-        };
-        let mut cursor = ReadCursor::new(&wire.bitmap_data);
-        let bitmap = Avc444BitmapStream::decode(&mut cursor).expect("bitmap decodes");
-        assert_eq!(bitmap.encoding, Encoding::LUMA_AND_CHROMA);
-        assert!(bitmap.stream1.data.is_empty());
-        assert_eq!(bitmap.stream1.rectangles, vec![stream1_regions[0].to_rectangle()]);
-
-        let stream2 = bitmap.stream2.expect("LC=0 carries stream2");
-        assert!(stream2.data.is_empty());
-        assert_eq!(stream2.rectangles, vec![stream2_regions[0].to_rectangle()]);
-    }
-
-    #[test]
-    fn two_stream_encoding_requires_second_stream_metadata() {
-        let (mut server, surface_id) = ready_server();
-        let regions = [Avc420Region::new(0, 0, 16, 16, 20, 80)];
-
-        assert!(
-            server
-                .send_avc444_frame_with_encoding(
-                    Codec1Type::Avc444v2,
-                    surface_id,
-                    Encoding::LUMA_AND_CHROMA,
-                    &[1, 2, 3, 4],
-                    &regions,
-                    Some(&[5, 6, 7, 8]),
-                    Some(&[]),
-                    1234,
-                )
-                .is_none()
-        );
-        assert!(server.drain_output().is_empty());
-    }
-
-    #[test]
-    fn capability_negotiation_preserves_client_avc_disabled_flag() {
-        let negotiated = negotiate_capabilities(
-            &[CapabilitySet::V10 {
-                flags: CapabilitiesV10Flags::SMALL_CACHE | CapabilitiesV10Flags::AVC_DISABLED,
-            }],
-            &[CapabilitySet::V10 {
-                flags: CapabilitiesV10Flags::empty(),
-            }],
-        )
-        .expect("V10 capability negotiates");
-
-        match negotiated {
-            CapabilitySet::V10 { flags } => {
-                assert!(flags.contains(CapabilitiesV10Flags::AVC_DISABLED));
-                assert!(!flags.contains(CapabilitiesV10Flags::SMALL_CACHE));
-            }
-            cap => panic!("unexpected negotiated capability: {cap:?}"),
-        }
-    }
 }

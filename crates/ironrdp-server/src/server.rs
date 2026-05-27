@@ -701,10 +701,22 @@ impl RdpServer {
         io_channel_id: u16,
         user_channel_id: u16,
     ) -> Result<RunState> {
-        // Avoid wave message queuing up and causing extra delays.
-        // This is a naive solution, better solutions should compute the actual delay, add IO priority, encode audio, use UDP etc.
-        // 4 frames should roughly corresponds to hundreds of ms in regular setups.
-        let mut wave_limit = 4;
+        // Avoid wave messages queuing up and causing extra delay. When a
+        // batch carries more than `WAVE_KEEP` waves, drop the OLDEST ones
+        // and keep the most recent — playing stale audio just bakes the
+        // latency in permanently, so a one-time dispatch stall (e.g. a video
+        // encode holding the server lock) would otherwise become a permanent
+        // audio offset.
+        //
+        // This is still a naive solution; better long-term: compute the
+        // actual delay, add IO priority, encode audio, use UDP, etc. 4 frames
+        // is roughly low hundreds of ms in regular setups.
+        const WAVE_KEEP: usize = 4;
+        let wave_total = events
+            .iter()
+            .filter(|e| matches!(e, ServerEvent::Rdpsnd(RdpsndServerMessage::Wave(..))))
+            .count();
+        let mut wave_skip = wave_total.saturating_sub(WAVE_KEEP);
         for event in events.drain(..) {
             trace!(?event, "Dispatching");
             match event {
@@ -725,11 +737,11 @@ impl RdpServer {
                     };
                     let msgs = match s {
                         RdpsndServerMessage::Wave(data, ts) => {
-                            if wave_limit == 0 {
-                                debug!("Dropping wave");
+                            if wave_skip > 0 {
+                                wave_skip -= 1;
+                                debug!("Dropping stale wave");
                                 continue;
                             }
-                            wave_limit -= 1;
                             rdpsnd.wave(data, ts)
                         }
                         RdpsndServerMessage::SetVolume { left, right } => rdpsnd.set_volume(left, right),
@@ -1166,7 +1178,12 @@ impl RdpServer {
         let message = decode::<X224<mcs::McsMessage<'_>>>(frame)?;
         match message.0 {
             mcs::McsMessage::SendDataRequest(data) => {
-                debug!(?data, "McsMessage::SendDataRequest");
+                debug!(
+                    initiator_id = data.initiator_id,
+                    channel_id = data.channel_id,
+                    user_data_len = data.user_data.len(),
+                    "McsMessage::SendDataRequest"
+                );
                 if data.channel_id == io_channel_id {
                     return self.handle_io_channel_data(data).await;
                 }

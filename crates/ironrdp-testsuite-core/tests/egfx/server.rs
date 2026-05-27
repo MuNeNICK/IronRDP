@@ -95,7 +95,7 @@ fn test_capability_negotiation_v8() {
     let mut server = GraphicsPipelineServer::new(handler);
 
     // Simulate client sending CapabilitiesAdvertise
-    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu(vec![CapabilitySet::V8 {
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V8 {
         flags: CapabilitiesV8Flags::SMALL_CACHE,
     }]));
 
@@ -114,7 +114,7 @@ fn test_capability_negotiation_v81_avc420() {
     let handler = Box::new(TestHandler::new());
     let mut server = GraphicsPipelineServer::new(handler);
 
-    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu(vec![CapabilitySet::V8_1 {
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V8_1 {
         flags: CapabilitiesV81Flags::AVC420_ENABLED | CapabilitiesV81Flags::SMALL_CACHE,
     }]));
 
@@ -131,7 +131,7 @@ fn test_capability_negotiation_v10_avc444() {
     let handler = Box::new(TestHandler::new());
     let mut server = GraphicsPipelineServer::new(handler);
 
-    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu(vec![CapabilitySet::V10 {
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V10 {
         flags: CapabilitiesV10Flags::SMALL_CACHE,
     }]));
 
@@ -148,7 +148,7 @@ fn test_capability_negotiation_v10_preserves_avc_disabled() {
     let handler = Box::new(TestHandler::new());
     let mut server = GraphicsPipelineServer::new(handler);
 
-    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu(vec![CapabilitySet::V10 {
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V10 {
         flags: CapabilitiesV10Flags::SMALL_CACHE | CapabilitiesV10Flags::AVC_DISABLED,
     }]));
 
@@ -161,8 +161,8 @@ fn test_capability_negotiation_v10_preserves_avc_disabled() {
     assert_eq!(output.len(), 1);
 
     match decode_output_pdu(output[0].as_ref()) {
-        GfxPdu::CapabilitiesConfirm(confirm) => match confirm.0 {
-            CapabilitySet::V10 { flags } => {
+        GfxPdu::CapabilitiesConfirm(confirm) => match confirm.0.parsed().expect("parse confirmed capability") {
+            Some(CapabilitySet::V10 { flags }) => {
                 assert!(flags.contains(CapabilitiesV10Flags::AVC_DISABLED));
             }
             cap => panic!("unexpected confirmed capability: {cap:?}"),
@@ -190,7 +190,7 @@ fn test_surface_lifecycle() {
     let mut server = GraphicsPipelineServer::new(handler);
 
     // Negotiate capabilities first
-    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu(vec![CapabilitySet::V8_1 {
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V8_1 {
         flags: CapabilitiesV81Flags::AVC420_ENABLED,
     }]));
     let payload = encode_pdu(&client_caps_pdu);
@@ -228,7 +228,7 @@ fn test_resize() {
     let mut server = GraphicsPipelineServer::new(handler);
 
     // Negotiate capabilities
-    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu(vec![CapabilitySet::V8 {
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V8 {
         flags: CapabilitiesV8Flags::SMALL_CACHE,
     }]));
     let payload = encode_pdu(&client_caps_pdu);
@@ -257,7 +257,7 @@ fn test_frame_flow_control() {
     server.set_max_frames_in_flight(2);
 
     // Negotiate capabilities with AVC420
-    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu(vec![CapabilitySet::V8_1 {
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V8_1 {
         flags: CapabilitiesV81Flags::AVC420_ENABLED,
     }]));
     let payload = encode_pdu(&client_caps_pdu);
@@ -307,7 +307,7 @@ fn test_qoe_snapshot_after_frame_ack() {
     let mut server = GraphicsPipelineServer::new(handler);
 
     // Negotiate capabilities.
-    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu(vec![CapabilitySet::V8_1 {
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V8_1 {
         flags: CapabilitiesV81Flags::AVC420_ENABLED,
     }]));
     let payload = encode_pdu(&client_caps_pdu);
@@ -351,7 +351,7 @@ fn test_qoe_snapshot_after_qoe_report() {
     let mut server = GraphicsPipelineServer::new(handler);
 
     // Negotiate capabilities (V10 for QoE support).
-    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu(vec![CapabilitySet::V10 {
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V10 {
         flags: CapabilitiesV10Flags::SMALL_CACHE,
     }]));
     let payload = encode_pdu(&client_caps_pdu);
@@ -386,7 +386,7 @@ fn test_qoe_reset() {
     let mut server = GraphicsPipelineServer::new(handler);
 
     // Negotiate.
-    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu(vec![CapabilitySet::V10 {
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V10 {
         flags: CapabilitiesV10Flags::SMALL_CACHE,
     }]));
     let payload = encode_pdu(&client_caps_pdu);
@@ -418,7 +418,7 @@ fn test_send_uncompressed_frame_queues_correctly() {
     let mut server = GraphicsPipelineServer::new(handler);
 
     // V8 client: EGFX but no H.264
-    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu(vec![CapabilitySet::V8 {
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V8 {
         flags: CapabilitiesV8Flags::SMALL_CACHE,
     }]));
     let payload = encode_pdu(&client_caps_pdu);
@@ -444,7 +444,7 @@ fn test_send_uncompressed_frame_backpressure() {
     let mut server = GraphicsPipelineServer::new(handler);
     server.set_max_frames_in_flight(1);
 
-    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu(vec![CapabilitySet::V8 {
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V8 {
         flags: CapabilitiesV8Flags::SMALL_CACHE,
     }]));
     let payload = encode_pdu(&client_caps_pdu);
