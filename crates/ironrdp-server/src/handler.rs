@@ -1,3 +1,4 @@
+use ironrdp_acceptor::ClientKeyboardData;
 use ironrdp_ainput as ainput;
 use ironrdp_pdu::input::fast_path::{self, SynchronizeFlags};
 use ironrdp_pdu::input::mouse::PointerFlags;
@@ -71,6 +72,7 @@ pub enum MouseEvent {
 /// }
 /// ```
 pub trait RdpServerInputHandler: Send {
+    fn client_keyboard_data(&mut self, _keyboard_data: ClientKeyboardData) {}
     fn keyboard(&mut self, event: KeyboardEvent);
     fn mouse(&mut self, event: MouseEvent);
 }

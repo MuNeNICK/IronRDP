@@ -944,6 +944,10 @@ impl RdpServer {
     {
         debug!("Client accepted");
 
+        if let Some(keyboard_data) = result.client_keyboard_data {
+            self.handler.lock().await.client_keyboard_data(keyboard_data);
+        }
+
         if !result.input_events.is_empty() {
             debug!("Handling input event backlog from acceptor sequence");
             self.handle_input_backlog(

@@ -35,7 +35,16 @@ pub struct Acceptor {
     saved_for_reactivation: AcceptorState,
     pub(crate) creds: Option<Credentials>,
     received_credentials: Option<Credentials>,
+    client_keyboard_data: Option<ClientKeyboardData>,
     reactivation: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClientKeyboardData {
+    pub keyboard_layout: u32,
+    pub keyboard_type: gcc::KeyboardType,
+    pub keyboard_subtype: u32,
+    pub keyboard_functional_keys_count: u32,
 }
 
 #[derive(Debug)]
@@ -55,6 +64,7 @@ pub struct AcceptorResult {
     /// Servers that need to validate credentials (e.g., via PAM or LDAP)
     /// can use this field for post-handshake validation.
     pub credentials: Option<Credentials>,
+    pub client_keyboard_data: Option<ClientKeyboardData>,
 }
 
 impl Acceptor {
@@ -75,6 +85,7 @@ impl Acceptor {
             saved_for_reactivation: Default::default(),
             creds,
             received_credentials: None,
+            client_keyboard_data: None,
             reactivation: false,
         }
     }
@@ -117,6 +128,7 @@ impl Acceptor {
             saved_for_reactivation,
             creds: consumed.creds,
             received_credentials: consumed.received_credentials,
+            client_keyboard_data: consumed.client_keyboard_data,
             reactivation: true,
         })
     }
@@ -172,6 +184,7 @@ impl Acceptor {
                 io_channel_id: self.io_channel_id,
                 reactivation: self.reactivation,
                 credentials: self.received_credentials.take(),
+                client_keyboard_data: self.client_keyboard_data,
             }),
             previous_state => {
                 self.state = previous_state;
@@ -425,6 +438,12 @@ impl Sequence for Acceptor {
                 debug!(message = ?settings_initial, "Received");
 
                 let gcc_blocks = settings_initial.conference_create_request.into_gcc_blocks();
+                self.client_keyboard_data = Some(ClientKeyboardData {
+                    keyboard_layout: gcc_blocks.core.keyboard_layout,
+                    keyboard_type: gcc_blocks.core.keyboard_type,
+                    keyboard_subtype: gcc_blocks.core.keyboard_subtype,
+                    keyboard_functional_keys_count: gcc_blocks.core.keyboard_functional_keys_count,
+                });
                 let early_capability = gcc_blocks.core.optional_data.early_capability_flags;
 
                 let joined: Vec<_> = gcc_blocks
