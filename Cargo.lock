@@ -3185,6 +3185,7 @@ dependencies = [
  "rand 0.9.4",
  "rayon",
  "rustls-pemfile",
+ "socket2",
  "tokio",
  "tokio-rustls",
  "tracing",

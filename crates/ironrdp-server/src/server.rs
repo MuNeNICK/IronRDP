@@ -31,8 +31,9 @@ use ironrdp_svc::{ChannelFlags, StaticChannelId, StaticChannelSet, SvcProcessor,
 use ironrdp_tokio::{FramedRead, FramedWrite, TokioFramed, split_tokio_framed, unsplit_tokio_framed};
 use rand::RngCore as _;
 use rdpsnd::server::{RdpsndServer, RdpsndServerMessage};
+use socket2::{SockRef, TcpKeepalive};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
-use tokio::net::TcpSocket;
+use tokio::net::{TcpSocket, TcpStream};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task;
 use tokio_rustls::TlsAcceptor;
@@ -50,6 +51,19 @@ use crate::{SoundServerFactory, builder, capabilities};
 
 /// TCP listen backlog size for the RDP server socket.
 const LISTENER_BACKLOG: u32 = 1024;
+
+const DEAD_PEER_KEEPALIVE_IDLE: Duration = Duration::from_secs(30);
+const DEAD_PEER_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
+const DEAD_PEER_KEEPALIVE_RETRIES: u32 = 3;
+
+fn enable_dead_peer_detection(stream: &TcpStream) {
+    let keepalive = TcpKeepalive::new()
+        .with_time(DEAD_PEER_KEEPALIVE_IDLE)
+        .with_interval(DEAD_PEER_KEEPALIVE_INTERVAL)
+        .with_retries(DEAD_PEER_KEEPALIVE_RETRIES);
+    let _ = SockRef::from(stream).set_tcp_keepalive(&keepalive);
+}
+
 const AUTO_RECONNECT_COOKIE_UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 /// Monotonic milliseconds since first use, for feeding the auto-detect state machine.
@@ -1276,6 +1290,7 @@ impl RdpServer {
                 Ok((stream, peer)) = listener.accept() => {
                     debug!(?peer, "Received connection");
                     drop(ev_receiver);
+                    enable_dead_peer_detection(&stream);
 
                     let accepted = self.connection_handler
                         .as_mut()
